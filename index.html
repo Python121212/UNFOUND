@@ -3,13 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NOCLIP - High-Res VHS Experience</title>
+    <title>NOCLIP - Immersive Found Footage</title>
     <style>
         body { margin: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; font-family: 'Courier New', Courier, monospace; }
         canvas { display: block; }
-        
         #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
-        
         #rec-ui {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             color: #eee; font-size: 16px; padding: 20px; box-sizing: border-box;
@@ -18,17 +16,21 @@
         .rec-dot { color: #f00; animation: blink 1s steps(2) infinite; }
         @keyframes blink { 0% { opacity: 0; } }
         .timestamp { position: absolute; bottom: 20px; right: 20px; text-align: right; line-height: 1.2; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); color: white; display: flex;
+            align-items: center; justify-content: center; z-index: 20;
+            font-size: 14px; text-align: center;
+        }
     </style>
 </head>
 <body>
+    <div id="overlay">TAP TO START RECORDING</div>
     <div id="ui">
         <div id="rec-ui">
             <div><span class="rec-dot">●</span>REC</div>
             <div>PLAY ▶</div>
-            <div class="timestamp">
-                MAY. 09 1991<br>
-                PM 11:04:22
-            </div>
+            <div class="timestamp">MAY. 09 1991<br>PM 11:04:22</div>
         </div>
     </div>
 
@@ -53,32 +55,24 @@
         const PLAYER_HEIGHT = 1.6;
 
         let scene, camera, renderer, composer, clock, frameCount = 0;
+        let audioListener, audioBuffer;
         const objects = new Map();
         const wallMeshes = []; 
         const lampData = []; 
         const floorMeshes = []; 
 
-        const controls = { moveVec: new THREE.Vector2(), isMoving: false };
+        const controls = { moveVec: new THREE.Vector2(), isMoving: false, currentVel: new THREE.Vector3() };
         let touchData = { moveId: null, lookId: null, moveStart: new THREE.Vector2(), lookPrev: new THREE.Vector2() };
 
-        const AMBIENT_LEVEL = 0.1; 
+        const AMBIENT_LEVEL = 0.08; 
         const BASE_COLOR = new THREE.Color(0x6a654a); 
         const LIGHT_COLOR = new THREE.Color(0xfffce0);
 
-        // VHS Shader
         const VHSShader = {
-            uniforms: {
-                "tDiffuse": { value: null },
-                "time": { value: 0.0 },
-                "range": { value: 0.015 },
-                "distortion": { value: 0.08 }
-            },
+            uniforms: { "tDiffuse": { value: null }, "time": { value: 0.0 }, "range": { value: 0.018 }, "distortion": { value: 0.1 } },
             vertexShader: `
                 varying vec2 vUv;
-                void main() {
-                    vUv = uv;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
-                }
+                void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }
             `,
             fragmentShader: `
                 uniform sampler2D tDiffuse;
@@ -86,55 +80,44 @@
                 uniform float range;
                 uniform float distortion;
                 varying vec2 vUv;
-
-                float noise(vec2 p) {
-                    return fract(sin(dot(p.xy, vec2(12.9898, 78.233))) * 43758.5453);
-                }
-
+                float noise(vec2 p) { return fract(sin(dot(p.xy, vec2(12.9898, 78.233))) * 43758.5453); }
                 void main() {
                     vec2 coord = vUv - 0.5;
                     float u_dist = length(coord);
                     coord *= 1.0 + u_dist * u_dist * distortion;
                     vec2 uv = coord + 0.5;
-
-                    if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-                        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-                        return;
-                    }
-
+                    if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
                     float shift = range * u_dist * (sin(time * 0.5) * 0.1 + 0.9);
                     vec4 colR = texture2D(tDiffuse, uv + vec2(shift, 0.0));
                     vec4 colG = texture2D(tDiffuse, uv);
                     vec4 colB = texture2D(tDiffuse, uv - vec2(shift, 0.0));
-
                     vec3 finalColor = vec3(colR.r, colG.g, colB.b);
-                    float n = noise(uv * time);
-                    finalColor += (n - 0.5) * 0.15;
-                    float scanline = sin(uv.y * 800.0 + time * 10.0) * 0.04;
-                    finalColor -= scanline;
-                    float vignette = 1.0 - u_dist * 1.5;
-                    vignette = pow(vignette, 0.7);
-                    finalColor *= vignette;
-                    finalColor *= (1.0 + (noise(vec2(time, time)) - 0.5) * 0.05);
-
-                    gl_FragColor = vec4(finalColor, 1.0);
+                    finalColor += (noise(uv * time) - 0.5) * 0.18;
+                    finalColor -= sin(uv.y * 900.0 + time * 15.0) * 0.04;
+                    float vignette = pow(1.0 - u_dist * 1.6, 0.8);
+                    gl_FragColor = vec4(finalColor * vignette * (1.0 + (noise(vec2(time)) - 0.5) * 0.06), 1.0);
                 }
             `
         };
 
         init();
-        animate();
 
         function init() {
             clock = new THREE.Clock();
             scene = new THREE.Scene();
             const fogColor = 0x8e8860; 
             scene.background = new THREE.Color(fogColor);
-            scene.fog = new THREE.Fog(fogColor, 5, 30); 
+            scene.fog = new THREE.Fog(fogColor, 4, 28); 
 
             camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 50);
             camera.rotation.order = 'YXZ';
             camera.position.set(0, PLAYER_HEIGHT, 0);
+
+            // Audio Setup
+            audioListener = new THREE.AudioListener();
+            camera.add(audioListener);
+            const audioLoader = new THREE.AudioLoader();
+            audioLoader.load('hum.mp3', (buffer) => { audioBuffer = buffer; });
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -143,23 +126,23 @@
 
             composer = new EffectComposer(renderer);
             composer.addPass(new RenderPass(scene, camera));
-
-            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.5, 0.8);
-            composer.addPass(bloomPass);
-
+            composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.7, 0.4, 0.8));
             const vhsPass = new ShaderPass(VHSShader);
             vhsPass.renderToScreen = true;
             composer.addPass(vhsPass);
 
             setupMobileControls();
             window.addEventListener('resize', onWindowResize);
+            document.getElementById('overlay').onclick = () => {
+                document.getElementById('overlay').style.display = 'none';
+                if(THREE.AudioContext.getContext().state === 'suspended') THREE.AudioContext.getContext().resume();
+                animate();
+            };
         }
 
         function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            composer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
         }
 
         function createChunk(key, x, z) {
@@ -167,9 +150,7 @@
             const floorGeo = new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE, 6, 6);
             const floorMat = new THREE.MeshBasicMaterial({ vertexColors: true });
             const floor = new THREE.Mesh(floorGeo, floorMat);
-            floor.rotation.x = -Math.PI / 2;
-            chunk.add(floor);
-            floorMeshes.push(floor);
+            floor.rotation.x = -Math.PI / 2; chunk.add(floor); floorMeshes.push(floor);
 
             const ceil = new THREE.Mesh(new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE), new THREE.MeshBasicMaterial({ color: 0x8a855a }));
             ceil.rotation.x = Math.PI / 2; ceil.position.y = WALL_HEIGHT; chunk.add(ceil);
@@ -179,27 +160,25 @@
                 const wall = new THREE.Mesh(new THREE.BoxGeometry(GRID_SIZE, WALL_HEIGHT, 0.25), new THREE.MeshBasicMaterial({ color: 0x8b8550 }));
                 wall.position.y = WALL_HEIGHT / 2;
                 if (getSeedRandom(z, x) > 0.5) wall.rotation.y = Math.PI / 2;
-                chunk.add(wall);
-                wallMeshes.push(wall);
-                wall.userData.chunkKey = key;
+                chunk.add(wall); wallMeshes.push(wall); wall.userData.chunkKey = key;
             } else if (getSeedRandom(x, z, 999) > 0.6) {
-                const typeRand = getSeedRandom(x, z, 111);
-                let type = (typeRand < 0.15) ? "flicker" : (typeRand < 0.2) ? "off" : "normal";
-                const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 2.5), new THREE.MeshBasicMaterial({ color: type === "off" ? 0x111111 : 0xffffff }));
-                lamp.position.set(0, WALL_HEIGHT - 0.05, 0);
-                chunk.add(lamp);
-                lampData.push({ key, mesh: lamp, x: x * GRID_SIZE, z: z * GRID_SIZE, type, intensity: type === "off" ? 0 : 1, nextStatusChange: 0 });
+                const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 2.5), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+                lamp.position.set(0, WALL_HEIGHT - 0.05, 0); chunk.add(lamp);
+                
+                // Positional Hum Sound
+                if (audioBuffer) {
+                    const sound = new THREE.PositionalAudio(audioListener);
+                    sound.setBuffer(audioBuffer); sound.setLoop(true); sound.setVolume(0.5); sound.setRefDistance(2); sound.play();
+                    lamp.add(sound);
+                }
+                lampData.push({ key, mesh: lamp, x: x * GRID_SIZE, z: z * GRID_SIZE, intensity: 1 });
             }
-
-            chunk.position.set(x * GRID_SIZE, 0, z * GRID_SIZE);
-            scene.add(chunk);
-            objects.set(key, chunk);
+            chunk.position.set(x * GRID_SIZE, 0, z * GRID_SIZE); scene.add(chunk); objects.set(key, chunk);
         }
 
         function removeChunk(key, obj) {
             scene.remove(obj);
-            const fIdx = floorMeshes.findIndex(f => f.parent === obj);
-            if(fIdx > -1) floorMeshes.splice(fIdx, 1);
+            const fIdx = floorMeshes.findIndex(f => f.parent === obj); if(fIdx > -1) floorMeshes.splice(fIdx, 1);
             for (let i = wallMeshes.length - 1; i >= 0; i--) if (wallMeshes[i].userData.chunkKey === key) wallMeshes.splice(i, 1);
             for (let i = lampData.length - 1; i >= 0; i--) if (lampData[i].key === key) lampData.splice(i, 1);
             obj.traverse(c => { if(c.geometry) c.geometry.dispose(); if(c.material) c.material.dispose(); });
@@ -207,44 +186,31 @@
         }
 
         function updateWorld() {
-            const pX = Math.round(camera.position.x / GRID_SIZE);
-            const pZ = Math.round(camera.position.z / GRID_SIZE);
+            const pX = Math.round(camera.position.x / GRID_SIZE); const pZ = Math.round(camera.position.z / GRID_SIZE);
             const currentKeys = new Set();
             for (let x = pX - VIEW_DISTANCE; x <= pX + VIEW_DISTANCE; x++) {
                 for (let z = pZ - VIEW_DISTANCE; z <= pZ + VIEW_DISTANCE; z++) {
-                    const key = `${x},${z}`; currentKeys.add(key);
-                    if (!objects.has(key)) createChunk(key, x, z);
+                    const key = `${x},${z}`; currentKeys.add(key); if (!objects.has(key)) createChunk(key, x, z);
                 }
             }
             for (const [key, obj] of objects.entries()) if (!currentKeys.has(key)) removeChunk(key, obj);
         }
 
         function updateLighting() {
-            lampData.forEach(l => {
-                if (l.type === "flicker" && frameCount >= l.nextStatusChange) {
-                    l.intensity = l.intensity > 0.5 ? 0.2 : 1.0;
-                    l.mesh.material.color.setHex(l.intensity > 0.5 ? 0xffffff : 0x222222);
-                    l.nextStatusChange = frameCount + (l.intensity > 0.5 ? Math.random() * 120 + 30 : Math.random() * 7 + 2);
-                }
-            });
             floorMeshes.forEach(f => {
-                const posAttr = f.geometry.attributes.position;
-                const colors = [];
-                const worldPos = new THREE.Vector3();
+                const posAttr = f.geometry.attributes.position; const colors = []; const worldPos = new THREE.Vector3();
                 for (let i = 0; i < posAttr.count; i++) {
-                    worldPos.fromBufferAttribute(posAttr, i);
-                    f.localToWorld(worldPos);
+                    worldPos.fromBufferAttribute(posAttr, i); f.localToWorld(worldPos);
                     let lightFactor = 0;
                     const nearby = lampData.filter(l => Math.abs(l.x - worldPos.x) < 8.5 && Math.abs(l.z - worldPos.z) < 8.5);
                     nearby.forEach(l => {
                         const d = Math.sqrt((worldPos.x - l.x)**2 + (worldPos.z - l.z)**2);
-                        lightFactor += Math.max(0, 1 - (d / 7.5))**2 * l.intensity;
+                        lightFactor += Math.max(0, 1 - (d / 7.5))**2;
                     });
                     const c = BASE_COLOR.clone().lerp(LIGHT_COLOR, Math.min(1, lightFactor * 0.7));
                     colors.push(Math.min(1, c.r + AMBIENT_LEVEL), Math.min(1, c.g + AMBIENT_LEVEL), Math.min(1, c.b + AMBIENT_LEVEL));
                 }
-                f.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-                f.geometry.attributes.color.needsUpdate = true;
+                f.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); f.geometry.attributes.color.needsUpdate = true;
             });
         }
 
@@ -262,12 +228,12 @@
                     const t = e.changedTouches[i];
                     if (t.identifier === touchData.moveId) {
                         const dx = t.clientX - touchData.moveStart.x, dy = t.clientY - touchData.moveStart.y;
-                        const dist = Math.min(Math.sqrt(dx*dx + dy*dy), 50), angle = Math.atan2(dy, dx);
-                        controls.moveVec.set(Math.cos(angle) * (dist/50), -Math.sin(angle) * (dist/50));
+                        const dist = Math.min(Math.sqrt(dx*dx + dy*dy), 50);
+                        controls.moveVec.set(Math.cos(Math.atan2(dy, dx)) * (dist/50), -Math.sin(Math.atan2(dy, dx)) * (dist/50));
                     }
                     if (t.identifier === touchData.lookId) {
-                        camera.rotation.y -= (t.clientX - touchData.lookPrev.x) * 0.004;
-                        camera.rotation.x -= (t.clientY - touchData.lookPrev.y) * 0.004;
+                        camera.rotation.y -= (t.clientX - touchData.lookPrev.x) * 0.003;
+                        camera.rotation.x -= (t.clientY - touchData.lookPrev.y) * 0.003;
                         camera.rotation.x = Math.max(-1.4, Math.min(1.4, camera.rotation.x));
                         touchData.lookPrev.set(t.clientX, t.clientY);
                     }
@@ -292,34 +258,37 @@
             frameCount++;
             const time = clock.getElapsedTime();
 
-            const shake = Math.sin(time * 2.0) * 0.01 + (Math.random() - 0.5) * 0.005;
-            camera.position.y = PLAYER_HEIGHT + shake;
-            camera.rotation.z = Math.sin(time * 0.5) * 0.012; 
+            // Breathing/Idle shake
+            const idleShake = Math.sin(time * 0.8) * 0.005;
+            camera.position.y = PLAYER_HEIGHT + idleShake;
 
             if (controls.isMoving) {
-                const inputDir = new THREE.Vector3(controls.moveVec.x, 0, -controls.moveVec.y).applyQuaternion(camera.quaternion);
-                inputDir.y = 0; inputDir.normalize();
-
-                const moveSpeed = 0.08;
-                const margin = 0.7;
-
-                // X軸の当たり判定
-                const nextX = new THREE.Vector3(inputDir.x, 0, 0).normalize();
-                const rayX = new THREE.Raycaster(camera.position, nextX, 0, margin);
-                if (inputDir.x !== 0 && rayX.intersectObjects(wallMeshes).length === 0) camera.position.x += inputDir.x * moveSpeed;
-
-                // Z軸の当たり判定
-                const nextZ = new THREE.Vector3(0, 0, inputDir.z).normalize();
-                const rayZ = new THREE.Raycaster(camera.position, nextZ, 0, margin);
-                if (inputDir.z !== 0 && rayZ.intersectObjects(wallMeshes).length === 0) camera.position.z += inputDir.z * moveSpeed;
+                const targetDir = new THREE.Vector3(controls.moveVec.x, 0, -controls.moveVec.y).applyQuaternion(camera.quaternion);
+                targetDir.y = 0; targetDir.normalize();
                 
-                const footstep = Math.sin(time * 12.0);
-                camera.position.y += footstep * 0.05;
-                camera.rotation.x += footstep * 0.005; 
+                // Collision with X/Z split
+                const margin = 0.7;
+                if (controls.moveVec.x !== 0) {
+                    const rX = new THREE.Raycaster(camera.position, new THREE.Vector3(targetDir.x,0,0).normalize(), 0, margin);
+                    if (rX.intersectObjects(wallMeshes).length === 0) camera.position.x += targetDir.x * 0.08;
+                }
+                if (controls.moveVec.y !== 0) {
+                    const rZ = new THREE.Raycaster(camera.position, new THREE.Vector3(0,0,targetDir.z).normalize(), 0, margin);
+                    if (rZ.intersectObjects(wallMeshes).length === 0) camera.position.z += targetDir.z * 0.08;
+                }
+
+                // Head Bob (Immersive)
+                const bobFreq = 10.0;
+                const bobUp = Math.sin(time * bobFreq) * 0.06;
+                const bobSide = Math.cos(time * bobFreq * 0.5) * 0.03;
+                camera.position.y += bobUp;
+                camera.position.x += bobSide; // Sway
+                camera.rotation.z = bobSide * 0.5;
+                camera.rotation.x += bobUp * 0.02;
             }
 
             if (composer.passes[2]) composer.passes[2].uniforms.time.value = time;
-            if (frameCount % 3 === 0) { updateWorld(); updateLighting(); }
+            if (frameCount % 4 === 0) { updateWorld(); updateLighting(); }
             composer.render();
         }
     </script>
