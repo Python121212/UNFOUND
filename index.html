@@ -3,15 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Backrooms - High-Res 3D with VHS</title>
+    <title>NOCLIP - High-Res VHS Experience</title>
     <style>
         body { margin: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; font-family: 'Courier New', Courier, monospace; }
-        /* canvasのピクセル化CSSを削除し、3D描画を滑らかに */
         canvas { display: block; }
         
         #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
         
-        /* 録画UI (Found Footage風) - 画面の歪みの影響を受けない */
         #rec-ui {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             color: #eee; font-size: 16px; padding: 20px; box-sizing: border-box;
@@ -47,7 +45,6 @@
         import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
         import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
         import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-        import { LuminosityHighPassShader } from 'three/addons/shaders/LuminosityHighPassShader.js';
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
         const GRID_SIZE = 6; 
@@ -64,18 +61,17 @@
         const controls = { moveVec: new THREE.Vector2(), isMoving: false };
         let touchData = { moveId: null, lookId: null, moveStart: new THREE.Vector2(), lookPrev: new THREE.Vector2() };
 
-        // Found Footage風のくすんだ色調
         const AMBIENT_LEVEL = 0.1; 
         const BASE_COLOR = new THREE.Color(0x6a654a); 
         const LIGHT_COLOR = new THREE.Color(0xfffce0);
 
-        // --- VHS Shader Definition (Custom Post-processing) ---
+        // VHS Shader
         const VHSShader = {
             uniforms: {
                 "tDiffuse": { value: null },
                 "time": { value: 0.0 },
-                "range": { value: 0.015 }, // RGBズレの強さ
-                "distortion": { value: 0.08 } // レンズ歪みの強さ
+                "range": { value: 0.015 },
+                "distortion": { value: 0.08 }
             },
             vertexShader: `
                 varying vec2 vUv;
@@ -91,48 +87,34 @@
                 uniform float distortion;
                 varying vec2 vUv;
 
-                // 擬似ランダムノイズ
                 float noise(vec2 p) {
                     return fract(sin(dot(p.xy, vec2(12.9898, 78.233))) * 43758.5453);
                 }
 
                 void main() {
-                    // --- 1. レンズ歪み（魚眼） ---
                     vec2 coord = vUv - 0.5;
                     float u_dist = length(coord);
                     coord *= 1.0 + u_dist * u_dist * distortion;
                     vec2 uv = coord + 0.5;
 
-                    // 画面外の処理
                     if(uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
                         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
                         return;
                     }
 
-                    // --- 2. RGBズレ（Chromatic Aberration） ---
-                    // 画面の端に行くほどズレを大きくする
                     float shift = range * u_dist * (sin(time * 0.5) * 0.1 + 0.9);
-                    
                     vec4 colR = texture2D(tDiffuse, uv + vec2(shift, 0.0));
                     vec4 colG = texture2D(tDiffuse, uv);
                     vec4 colB = texture2D(tDiffuse, uv - vec2(shift, 0.0));
 
                     vec3 finalColor = vec3(colR.r, colG.g, colB.b);
-
-                    // --- 3. 動的ノイズ & 走査線 ---
                     float n = noise(uv * time);
-                    finalColor += (n - 0.5) * 0.15; // 砂嵐ノイズ
-
-                    // 走査線
+                    finalColor += (n - 0.5) * 0.15;
                     float scanline = sin(uv.y * 800.0 + time * 10.0) * 0.04;
                     finalColor -= scanline;
-
-                    // --- 4. ビネット（四隅を暗く） & 画面の明滅 ---
                     float vignette = 1.0 - u_dist * 1.5;
-                    vignette = pow(vignette, 0.7); // 効き具合
+                    vignette = pow(vignette, 0.7);
                     finalColor *= vignette;
-                    
-                    // 不規則なシグナルノイズ（画面全体の明るさ変動）
                     finalColor *= (1.0 + (noise(vec2(time, time)) - 0.5) * 0.05);
 
                     gl_FragColor = vec4(finalColor, 1.0);
@@ -148,50 +130,40 @@
             scene = new THREE.Scene();
             const fogColor = 0x8e8860; 
             scene.background = new THREE.Color(fogColor);
-            
-            // --- フォグの範囲を遠くに拡大 (1, 15 -> 5, 30) ---
             scene.fog = new THREE.Fog(fogColor, 5, 30); 
 
             camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 50);
             camera.rotation.order = 'YXZ';
             camera.position.set(0, PLAYER_HEIGHT, 0);
 
-            renderer = new THREE.WebGLRenderer({ antialias: false });
-            
-            // --- 3Dの解像度（ピクセル数）を大幅に上げる (roughScale: 0.85 -> 1.0) ---
-            const targetWidth = window.innerWidth;
-            const targetHeight = window.innerHeight;
-            const roughScale = 1.0; // 元の解像度で描画 (ピクセル数を最大に)
-            renderer.setSize(targetWidth * roughScale, targetHeight * roughScale, false);
-            
-            renderer.domElement.style.width = '100%';
-            renderer.domElement.style.height = '100%';
-            renderer.setPixelRatio(window.devicePixelRatio); // デバイスピクセル比も利用
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
-            //ポストプロセス設定
             composer = new EffectComposer(renderer);
-            
-            const renderPass = new RenderPass(scene, camera);
-            composer.addPass(renderPass);
+            composer.addPass(new RenderPass(scene, camera));
 
-            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-            bloomPass.threshold = 0.8; // 明るい場所だけ滲ませる
-            bloomPass.strength = 0.6; // 滲みの強さ
-            bloomPass.radius = 0.5; // 滲みの広がり
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.5, 0.8);
             composer.addPass(bloomPass);
 
-            // VHSディストーション（カスタムシェーダー）- ここはそのまま
             const vhsPass = new ShaderPass(VHSShader);
             vhsPass.renderToScreen = true;
             composer.addPass(vhsPass);
 
             setupMobileControls();
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
         }
 
         function createChunk(key, x, z) {
             const chunk = new THREE.Group();
-            // 床: 頂点カラーを細かく、ピクセル数を上げるためセグメントを維持
             const floorGeo = new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE, 6, 6);
             const floorMat = new THREE.MeshBasicMaterial({ vertexColors: true });
             const floor = new THREE.Mesh(floorGeo, floorMat);
@@ -213,15 +185,10 @@
             } else if (getSeedRandom(x, z, 999) > 0.6) {
                 const typeRand = getSeedRandom(x, z, 111);
                 let type = (typeRand < 0.15) ? "flicker" : (typeRand < 0.2) ? "off" : "normal";
-                
                 const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 2.5), new THREE.MeshBasicMaterial({ color: type === "off" ? 0x111111 : 0xffffff }));
                 lamp.position.set(0, WALL_HEIGHT - 0.05, 0);
                 chunk.add(lamp);
-                
-                lampData.push({ 
-                    key, mesh: lamp, x: x * GRID_SIZE, z: z * GRID_SIZE, type, 
-                    intensity: type === "off" ? 0 : 1, nextStatusChange: 0 
-                });
+                lampData.push({ key, mesh: lamp, x: x * GRID_SIZE, z: z * GRID_SIZE, type, intensity: type === "off" ? 0 : 1, nextStatusChange: 0 });
             }
 
             chunk.position.set(x * GRID_SIZE, 0, z * GRID_SIZE);
@@ -249,21 +216,17 @@
                     if (!objects.has(key)) createChunk(key, x, z);
                 }
             }
-            for (const [key, obj] of objects.entries()) {
-                if (!currentKeys.has(key)) removeChunk(key, obj);
-            }
+            for (const [key, obj] of objects.entries()) if (!currentKeys.has(key)) removeChunk(key, obj);
         }
 
         function updateLighting() {
             lampData.forEach(l => {
                 if (l.type === "flicker" && frameCount >= l.nextStatusChange) {
-                    const isLit = l.intensity > 0.5;
-                    l.intensity = isLit ? 0.2 : 1.0;
+                    l.intensity = l.intensity > 0.5 ? 0.2 : 1.0;
                     l.mesh.material.color.setHex(l.intensity > 0.5 ? 0xffffff : 0x222222);
                     l.nextStatusChange = frameCount + (l.intensity > 0.5 ? Math.random() * 120 + 30 : Math.random() * 7 + 2);
                 }
             });
-
             floorMeshes.forEach(f => {
                 const posAttr = f.geometry.attributes.position;
                 const colors = [];
@@ -272,7 +235,6 @@
                     worldPos.fromBufferAttribute(posAttr, i);
                     f.localToWorld(worldPos);
                     let lightFactor = 0;
-                    // --- 光の計算範囲をわずかに拡大 (7.5) ---
                     const nearby = lampData.filter(l => Math.abs(l.x - worldPos.x) < 8.5 && Math.abs(l.z - worldPos.z) < 8.5);
                     nearby.forEach(l => {
                         const d = Math.sqrt((worldPos.x - l.x)**2 + (worldPos.z - l.z)**2);
@@ -330,34 +292,34 @@
             frameCount++;
             const time = clock.getElapsedTime();
 
-            // 手ブレ
             const shake = Math.sin(time * 2.0) * 0.01 + (Math.random() - 0.5) * 0.005;
             camera.position.y = PLAYER_HEIGHT + shake;
             camera.rotation.z = Math.sin(time * 0.5) * 0.012; 
 
             if (controls.isMoving) {
-                const dir = new THREE.Vector3(controls.moveVec.x, 0, -controls.moveVec.y).applyQuaternion(camera.quaternion);
-                dir.y = 0; dir.normalize();
-                const ray = new THREE.Raycaster(camera.position, dir, 0, 0.7);
-                if (ray.intersectObjects(wallMeshes).length === 0) camera.position.addScaledVector(dir, 0.08);
+                const inputDir = new THREE.Vector3(controls.moveVec.x, 0, -controls.moveVec.y).applyQuaternion(camera.quaternion);
+                inputDir.y = 0; inputDir.normalize();
+
+                const moveSpeed = 0.08;
+                const margin = 0.7;
+
+                // X軸の当たり判定
+                const nextX = new THREE.Vector3(inputDir.x, 0, 0).normalize();
+                const rayX = new THREE.Raycaster(camera.position, nextX, 0, margin);
+                if (inputDir.x !== 0 && rayX.intersectObjects(wallMeshes).length === 0) camera.position.x += inputDir.x * moveSpeed;
+
+                // Z軸の当たり判定
+                const nextZ = new THREE.Vector3(0, 0, inputDir.z).normalize();
+                const rayZ = new THREE.Raycaster(camera.position, nextZ, 0, margin);
+                if (inputDir.z !== 0 && rayZ.intersectObjects(wallMeshes).length === 0) camera.position.z += inputDir.z * moveSpeed;
                 
-                // 歩行時の大きな揺れ
                 const footstep = Math.sin(time * 12.0);
                 camera.position.y += footstep * 0.05;
                 camera.rotation.x += footstep * 0.005; 
             }
 
-            // VHSシェーダーへの時間供給
-            if (composer.passes[2]) {
-                composer.passes[2].uniforms.time.value = time;
-            }
-
-            if (frameCount % 3 === 0) {
-                updateWorld();
-                updateLighting();
-            }
-
-            // renderer.renderではなく、composer.renderを使う
+            if (composer.passes[2]) composer.passes[2].uniforms.time.value = time;
+            if (frameCount % 3 === 0) { updateWorld(); updateLighting(); }
             composer.render();
         }
     </script>
