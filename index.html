@@ -3,34 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>THE BACKROOMS - ABSOLUTE IMMERSION</title>
+    <title>BACKROOMS - HEAVY VHS EDIT</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; touch-action: none; cursor: none; }
-        canvas { display: block; filter: contrast(1.1) brightness(0.9); }
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; }
+        canvas { display: block; }
         #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
-        #vhs-overlay {
+        #vhs-static {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: radial-gradient(circle, transparent 20%, rgba(0,0,0,0.4) 100%);
-            pointer-events: none;
+            background: url('https://www.transparenttextures.com/patterns/stardust.png');
+            opacity: 0.05; pointer-events: none;
         }
         #rec-info {
-            position: absolute; top: 30px; left: 30px; color: #fff; font-family: 'monospace';
-            font-size: 18px; text-shadow: 2px 2px #000; opacity: 0.7;
+            position: absolute; top: 40px; left: 40px; color: #ddd; font-family: 'Courier New', monospace;
+            font-size: 20px; text-shadow: 2px 2px 5px #000; letter-spacing: 2px;
         }
-        .blink { animation: blink-anim 1s steps(2) infinite; color: #f00; }
+        .blink { animation: blink-anim 1s steps(2) infinite; color: #ff0000; }
         @keyframes blink-anim { 0% { opacity: 0; } }
+        .vhs-time { position: absolute; bottom: 40px; right: 40px; color: #ddd; font-family: 'Courier New', monospace; text-align: right; }
         #overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: #000; color: #555; display: flex; align-items: center;
-            justify-content: center; z-index: 100; font-family: monospace; letter-spacing: 5px;
+            background: #000; color: #888; display: flex; align-items: center;
+            justify-content: center; z-index: 100; font-family: monospace; letter-spacing: 8px; cursor: pointer;
         }
     </style>
 </head>
 <body>
-    <div id="overlay">SYNCING... [TAP]</div>
+    <div id="overlay">LOAD TAPE [TAP]</div>
     <div id="ui">
-        <div id="vhs-overlay"></div>
-        <div id="rec-info"><span class="blink">●</span> REC  00:04:31:12</div>
+        <div id="vhs-static"></div>
+        <div id="rec-info"><span class="blink">●</span>REC</div>
+        <div class="vhs-time">MAY. 09 1991<br>23:04:22</div>
     </div>
 
     <script type="importmap">
@@ -48,62 +50,69 @@
         import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
         let scene, camera, renderer, composer, clock;
-        let audio, audioBuffer;
-        const walls = [], objects = new Map();
-        
-        // プレイヤーの状態
-        const player = {
-            pos: new THREE.Vector3(0, 1.6, 0),
-            vel: new THREE.Vector3(),
-            rot: new THREE.Euler(0, 0, 0, 'YXZ'),
-            lookVel: new THREE.Vector2(),
-            walkingTimer: 0
-        };
-
-        const controls = { move: new THREE.Vector2(), active: false };
+        let audio;
+        const objects = new Map(), wallMeshes = [], floorMeshes = [], lampData = [];
+        const player = { pos: new THREE.Vector3(0, 1.6, 0), vel: new THREE.Vector3(), rot: new THREE.Euler(0, 0, 0, 'YXZ'), walkingTimer: 0 };
+        const controls = { moveVec: new THREE.Vector2(), isMoving: false };
         let touchStart = new THREE.Vector2(), lookPrev = new THREE.Vector2();
+
+        const VHSShader = {
+            uniforms: { "tDiffuse": { value: null }, "time": { value: 0 } },
+            vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+            fragmentShader: `
+                uniform sampler2D tDiffuse; uniform float time; varying vec2 vUv;
+                float noise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+                void main() {
+                    vec2 uv = vUv;
+                    // Tracking error (jitter)
+                    float jitter = step(0.995, noise(vec2(time * 0.5, 0.0))) * (noise(vec2(time, uv.y)) - 0.5) * 0.05;
+                    uv.x += jitter;
+                    
+                    // Chromatic Aberration
+                    float shift = 0.003 + (sin(time) * 0.002);
+                    vec4 r = texture2D(tDiffuse, uv + vec2(shift, 0.0));
+                    vec4 g = texture2D(tDiffuse, uv);
+                    vec4 b = texture2D(tDiffuse, uv - vec2(shift, 0.0));
+                    
+                    vec3 col = vec3(r.r, g.g, b.b);
+                    
+                    // Scanlines
+                    col *= 0.9 + 0.1 * sin(uv.y * 800.0);
+                    
+                    // Grain & Flicker
+                    col += (noise(uv + time) - 0.5) * 0.15;
+                    col *= 0.95 + 0.05 * sin(time * 100.0);
+
+                    // Vignette
+                    float vig = smoothstep(0.7, 0.1, length(vUv - 0.5));
+                    gl_FragColor = vec4(col * vig, 1.0);
+                }
+            `
+        };
 
         init();
 
         function init() {
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x7a7444);
-            scene.fog = new THREE.Fog(0x7a7444, 2, 25);
+            scene.background = new THREE.Color(0x6a6440);
+            scene.fog = new THREE.Fog(0x6a6440, 2, 22);
 
-            camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 50);
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 50);
             camera.rotation.order = 'YXZ';
 
-            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer = new THREE.WebGLRenderer();
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio * 0.7); // 意図的に解像度を落とす
+            renderer.setPixelRatio(window.devicePixelRatio * 0.6); // 低解像度化
             document.body.appendChild(renderer.domElement);
-
-            // VHS Shader (Modified for more grit)
-            const vhsPass = new ShaderPass({
-                uniforms: { "tDiffuse": { value: null }, "time": { value: 0 } },
-                vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-                fragmentShader: `
-                    uniform sampler2D tDiffuse; uniform float time; varying vec2 vUv;
-                    float noise(vec2 p) { return fract(sin(dot(p, vec2(12.98, 78.23))) * 43758.54); }
-                    void main() {
-                        vec2 uv = vUv;
-                        float d = length(uv - 0.5);
-                        uv.x += (noise(vec2(time, uv.y)) - 0.5) * 0.002; // Line jitter
-                        vec4 col = texture2D(tDiffuse, uv);
-                        col.rgb += (noise(uv + time) - 0.5) * 0.15; // Grain
-                        float vig = smoothstep(0.8, 0.2, d);
-                        gl_FragColor = vec4(col.rgb * vig, 1.0);
-                    }
-                `
-            });
 
             composer = new EffectComposer(renderer);
             composer.addPass(new RenderPass(scene, camera));
+            const vhsPass = new ShaderPass(VHSShader);
             composer.addPass(vhsPass);
 
             clock = new THREE.Clock();
 
-            // Audio
+            // Audio (Constant Hum)
             const listener = new THREE.AudioListener();
             camera.add(listener);
             audio = new THREE.Audio(listener);
@@ -111,35 +120,8 @@
                 audio.setBuffer(buffer); audio.setLoop(true); audio.setVolume(0.5);
             });
 
-            setupInput();
+            setupControls();
             animate();
-        }
-
-        function setupInput() {
-            window.addEventListener('touchstart', e => {
-                const t = e.touches[0];
-                if (t.clientX < window.innerWidth / 2) { touchStart.set(t.clientX, t.clientY); controls.active = true; }
-                else { lookPrev.set(t.clientX, t.clientY); }
-            }, {passive: false});
-
-            window.addEventListener('touchmove', e => {
-                e.preventDefault();
-                for(let t of e.touches) {
-                    if (t.clientX < window.innerWidth / 2) {
-                        controls.move.set((t.clientX - touchStart.x) * 0.02, -(t.clientY - touchStart.y) * 0.02);
-                    } else {
-                        player.lookVel.x = (t.clientX - lookPrev.x) * 0.005;
-                        player.lookVel.y = (t.clientY - lookPrev.y) * 0.005;
-                        lookPrev.set(t.clientX, t.clientY);
-                    }
-                }
-            }, {passive: false});
-
-            window.addEventListener('touchend', () => { controls.active = false; controls.move.set(0,0); });
-            document.getElementById('overlay').onclick = () => {
-                document.getElementById('overlay').style.display = 'none';
-                if(audio.buffer) audio.play();
-            };
         }
 
         function createChunk(x, z) {
@@ -147,29 +129,51 @@
             if (objects.has(key)) return;
             const group = new THREE.Group();
             
-            // Floor/Ceil
-            const mat = new THREE.MeshBasicMaterial({ color: 0x8a8454 });
-            const f = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), mat);
-            f.rotation.x = -Math.PI/2; group.add(f);
-            const c = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), mat);
-            c.rotation.x = Math.PI/2; c.position.y = 3.5; group.add(c);
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(6, 6, 4, 4), new THREE.MeshBasicMaterial({ color: 0x6a6440, vertexColors: true }));
+            floor.rotation.x = -Math.PI/2; group.add(floor); floorMeshes.push(floor);
 
-            // Random Wall
-            if (Math.random() > 0.7) {
-                const w = new THREE.Mesh(new THREE.BoxGeometry(8, 3.5, 0.5), new THREE.MeshBasicMaterial({color: 0x7a7444}));
-                w.position.y = 1.75;
+            const ceil = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshBasicMaterial({ color: 0x5a5430 }));
+            ceil.rotation.x = Math.PI/2; ceil.position.y = 3.2; group.add(ceil);
+
+            if (Math.sin(x * 0.7 + z * 0.5) > 0.7) {
+                const w = new THREE.Mesh(new THREE.BoxGeometry(6, 3.2, 0.2), new THREE.MeshBasicMaterial({color: 0x6a6440}));
+                w.position.y = 1.6;
                 if(Math.random() > 0.5) w.rotation.y = Math.PI/2;
-                group.add(w); walls.push(w);
+                group.add(w); wallMeshes.push(w); w.userData.chunkKey = key;
+            } else if (Math.random() > 0.6) {
+                const l = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.5), new THREE.MeshBasicMaterial({color: 0xffffee}));
+                l.position.set(0, 3.19, 0); l.rotation.x = Math.PI/2; group.add(l);
+                lampData.push({ x: x*6, z: z*6, key });
             }
 
-            // Light Mesh
-            if (Math.random() > 0.8) {
-                const l = new THREE.Mesh(new THREE.PlaneGeometry(1, 2), new THREE.MeshBasicMaterial({color: 0xffffee}));
-                l.position.set(0, 3.49, 0); l.rotation.x = Math.PI/2; group.add(l);
-            }
-
-            group.position.set(x * 8, 0, z * 8);
+            group.position.set(x * 6, 0, z * 6);
             scene.add(group); objects.set(key, group);
+        }
+
+        function setupControls() {
+            window.addEventListener('touchstart', e => {
+                const t = e.touches[0];
+                if (t.clientX < window.innerWidth / 2) { touchStart.set(t.clientX, t.clientY); controls.isMoving = true; }
+                else { lookPrev.set(t.clientX, t.clientY); }
+            }, {passive: false});
+            window.addEventListener('touchmove', e => {
+                e.preventDefault();
+                for(let t of e.touches) {
+                    if (t.clientX < window.innerWidth / 2) {
+                        controls.moveVec.set((t.clientX - touchStart.x) * 0.015, -(t.clientY - touchStart.y) * 0.015);
+                    } else {
+                        camera.rotation.y -= (t.clientX - lookPrev.x) * 0.004;
+                        camera.rotation.x -= (t.clientY - lookPrev.y) * 0.004;
+                        camera.rotation.x = Math.max(-1.4, Math.min(1.4, camera.rotation.x));
+                        lookPrev.set(t.clientX, t.clientY);
+                    }
+                }
+            }, {passive: false});
+            window.addEventListener('touchend', () => { controls.isMoving = false; controls.moveVec.set(0,0); });
+            document.getElementById('overlay').onclick = () => {
+                document.getElementById('overlay').style.display = 'none';
+                if(audio.buffer) audio.play();
+            };
         }
 
         function animate() {
@@ -177,31 +181,19 @@
             const dt = clock.getDelta();
             const time = clock.elapsedTime;
 
-            // Look inertia
-            player.rot.y -= player.lookVel.x;
-            player.rot.x -= player.lookVel.y;
-            player.rot.x = Math.max(-1.2, Math.min(1.2, player.rot.x));
-            player.lookVel.multiplyScalar(0.9);
-
-            // Movement with physics feel
-            if (controls.active) {
-                const dir = new THREE.Vector3(controls.move.x, 0, -controls.move.y).applyEuler(new THREE.Euler(0, player.rot.y, 0));
-                player.vel.add(dir.multiplyScalar(dt * 5));
-                player.walkingTimer += dt * 8;
+            if (controls.isMoving) {
+                const dir = new THREE.Vector3(controls.moveVec.x, 0, -controls.moveVec.y).applyEuler(new THREE.Euler(0, camera.rotation.y, 0));
+                camera.position.add(dir.multiplyScalar(0.15));
+                player.walkingTimer += 0.15;
             }
-            player.vel.multiplyScalar(0.9); 
-            camera.position.add(player.vel);
-            
-            // "Human" Camera Motion (Footsteps & Sway)
-            const bob = Math.sin(player.walkingTimer) * player.vel.length() * 0.5;
-            const sway = Math.cos(player.walkingTimer * 0.5) * player.vel.length() * 0.2;
-            
-            camera.position.y = 1.6 + bob + (Math.sin(time * 0.5) * 0.02); // Breathing + Walk
-            camera.rotation.set(player.rot.x + (bob * 0.1), player.rot.y + sway, sway * 0.5);
 
-            // Chunk management
-            const cx = Math.round(camera.position.x / 8), cz = Math.round(camera.position.z / 8);
-            for(let i=-3; i<=3; i++) for(let j=-3; j<=3; j++) createChunk(cx+i, cz+j);
+            // Head Bob
+            const bob = Math.sin(player.walkingTimer * 0.8) * 0.05;
+            camera.position.y = 1.6 + bob + Math.sin(time * 0.5) * 0.01;
+            camera.rotation.z = Math.sin(player.walkingTimer * 0.4) * 0.02;
+
+            const cx = Math.round(camera.position.x / 6), cz = Math.round(camera.position.z / 6);
+            for(let i=-4; i<=4; i++) for(let j=-4; j<=4; j++) createChunk(cx+i, cz+j);
 
             composer.passes[1].uniforms.time.value = time;
             composer.render();
